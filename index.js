@@ -287,6 +287,7 @@ const loadJackpotsFromDbToShow = async () => {
         id: doc.id,
         nombre: data.nombre,
         amount: data.amount,
+        allowedLevels: data.allowedLevels,
         maxAmount: data.maxAmount,
         active: data.active,
         contributions: data.contributions,
@@ -313,6 +314,7 @@ const loadJackpotsFromDbToShowAllEver = async () => {
         id: doc.id,
         nombre: data.nombre,
         amount: data.amount,
+        allowedLevels: data.allowedLevels,
         maxAmount: data.maxAmount,
         active: data.active,
         contributions: data.contributions,
@@ -375,10 +377,36 @@ app.get('/api/alljackpotscreatedforspin', async (req, res) => {
   }
 });
 
+app.post('/api/updateJackpotLevels/:id', async (req, res) => {
+  const { id } = req.params;
+  const { allowedLevels } = req.body; 
+
+  try {
+    const jackpotRef = db.collection('jackpots').doc(id);
+    const jackpotDoc = await jackpotRef.get();
+
+    if (!jackpotDoc.exists) {
+      return res.status(404).json({ error: `Jackpot con ID ${id} no encontrado` });
+    }
+
+    await jackpotRef.update({ allowedLevels });
+
+    res.json({ message: `Niveles de ${id} actualizados correctamente`, allowedLevels });
+  } catch (error) {
+    if (error.code === 'RESOURCE_EXHAUSTED') {
+      res.status(429).json({ error: 'Quota exceeded, please try again later' });
+    } else {
+      res.status(500).json({ error: 'Error al actualizar los niveles del jackpot' });
+    }
+  }
+});
+
+
+
 app.post('/api/spin/:type', async (req, res) => {
   initializeJackpots();
   const jackpotName = decodeURIComponent(req.params.type);
-  const { amount } = req.body;
+  const { amount, playerLevel } = req.body;
 
   console.log(`Tipo de jackpot recibido: ${jackpotName}`);
   console.log(`Cantidad recibida: ${amount}`);
@@ -404,6 +432,11 @@ app.post('/api/spin/:type', async (req, res) => {
     }
 
     const jackpot = jackpotDoc.data();
+
+
+     if (!jackpot.allowedLevels.includes(playerLevel)) {
+      return res.status(403).json({ error: 'Nivel de jugador no permitido para este jackpot' });
+    }
 
     if (
       !jackpot.active &&
