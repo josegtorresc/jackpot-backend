@@ -52,19 +52,36 @@ app.use(cors());
 let jackpots = {};
 let jackpotsMap = new Map();
 
+
 const initializeJackpots = async () => {
   try {
+    console.log('Iniciando la carga de jackpots desde Firestore...');
     const snapshot = await db.collection('jackpots').get();
-    snapshot.forEach((doc) => {
-      const jackpotData = doc.data();
-      jackpots[doc.id] = jackpotData;
-      jackpotsMap.set(jackpotData.nombre, doc.id);
-    });
-    console.log('Jackpots inicializados:', jackpots);
+
+    if (snapshot.empty) {
+      console.log('No se encontraron documentos en la colección jackpots.');
+    } else {
+      snapshot.forEach((doc) => {
+        const jackpotData = doc.data();
+        jackpots[doc.id] = jackpotData;
+
+        if (jackpotData.nombre) {
+          jackpotsMap.set(jackpotData.nombre, doc.id);
+          console.log(`Jackpot añadido: ${jackpotData.nombre} (ID: ${doc.id})`);
+        } else {
+          console.warn(`El documento con ID ${doc.id} no tiene un campo 'nombre'.`);
+        }
+      });
+
+      console.log('Jackpots inicializados:', jackpots);
+      console.log('Jackpots Map:', Array.from(jackpotsMap.entries()));
+    }
   } catch (error) {
     console.error('Error al inicializar los jackpots:', error);
   }
 };
+
+
 
 //Ruta notificaciones
 app.post('/api/notifications', async (req, res) => {
@@ -289,11 +306,16 @@ const loadJackpotsFromDbToShow = async () => {
         amount: data.amount,
         allowedLevels: data.allowedLevels,
         maxAmount: data.maxAmount,
+        minBet: data.minBet,          
+        maxBet: data.maxBet,           
+        betPercentage: data.betPercentage,  
         active: data.active,
         contributions: data.contributions,
         idAutomatico: data.idAutomatico,
         idCasino: data.idCasino,
         idMaquina: data.idMaquina,
+        monto: data.monto,            
+        triggerAmount: data.triggerAmount,
       });
     });
     console.log('Jackpots cargados correctamente desde Firestore', jackpots);
@@ -377,9 +399,10 @@ app.get('/api/alljackpotscreatedforspin', async (req, res) => {
   }
 });
 
+
 app.post('/api/updateJackpotLevels/:id', async (req, res) => {
   const { id } = req.params;
-  const { allowedLevels } = req.body; 
+  const { allowedLevels, minBet, maxBet, betPercentage } = req.body;
 
   try {
     const jackpotRef = db.collection('jackpots').doc(id);
@@ -389,18 +412,24 @@ app.post('/api/updateJackpotLevels/:id', async (req, res) => {
       return res.status(404).json({ error: `Jackpot con ID ${id} no encontrado` });
     }
 
-    await jackpotRef.update({ allowedLevels });
+    const updatedData = {
+      allowedLevels,
+      minBet: parseFloat(minBet),
+      maxBet: parseFloat(maxBet),
+      betPercentage: parseFloat(betPercentage),
+    };
 
-    res.json({ message: `Niveles de ${id} actualizados correctamente`, allowedLevels });
+    await jackpotRef.update(updatedData);
+
+    res.json({ message: `Configuraciones de ${id} actualizadas correctamente`, updatedData });
   } catch (error) {
     if (error.code === 'RESOURCE_EXHAUSTED') {
       res.status(429).json({ error: 'Quota exceeded, please try again later' });
     } else {
-      res.status(500).json({ error: 'Error al actualizar los niveles del jackpot' });
+      res.status(500).json({ error: 'Error al actualizar las configuraciones del jackpot' });
     }
   }
 });
-
 
 
 app.post('/api/spin/:type', async (req, res) => {
@@ -415,9 +444,7 @@ app.post('/api/spin/:type', async (req, res) => {
 
   if (!docId) {
     console.error(`Jackpot ${jackpotName} no encontrado`);
-    return res
-      .status(404)
-      .json({ error: `Jackpot ${jackpotName} no encontrado` });
+    return res.status(404).json({ error: `Jackpot ${jackpotName} no encontrado` });
   }
 
   try {
@@ -426,41 +453,55 @@ app.post('/api/spin/:type', async (req, res) => {
 
     if (!jackpotDoc.exists) {
       console.error(`Jackpot ${jackpotName} no encontrado en Firestore`);
-      return res
-        .status(404)
-        .json({ error: `Jackpot ${jackpotName} no encontrado en Firestore` });
+      return res.status(404).json({ error: `Jackpot ${jackpotName} no encontrado en Firestore` });
     }
 
     const jackpot = jackpotDoc.data();
+    const allowedLevels = jackpot.allowedLevels || [];
 
-
-     if (!jackpot.allowedLevels.includes(playerLevel)) {
+    if (!Array.isArray(allowedLevels) || !allowedLevels.includes(playerLevel)) {
       return res.status(403).json({ error: 'Nivel de jugador no permitido para este jackpot' });
     }
 
-    if (
-      !jackpot.active &&
-      parseFloat(jackpot.amount) + parseFloat(amount) >= jackpot.maxAmount
-    ) {
-      jackpot.active = true;
-      try {
-        await db.collection('jackpots').doc(docId).update(jackpot);
-        res.json({
-          amountWon: '0.00',
-          jackpotAmount: parseFloat(jackpot.amount).toFixed(2),
-          inJackpot: true,
-          wonJackpot: false,
-        });
-      } catch (error) {
-        if (error.code === 'RESOURCE_EXHAUSTED') {
-          res
-            .status(429)
-            .json({ error: 'Quota exceeded, please try again later' });
-        } else {
-          res.status(500).json({ error: 'Error al actualizar el jackpot' });
-        }
+    const minBet = jackpot.minBet || 0;
+    const maxBet = jackpot.maxBet || Infinity;
+
+    if (amount < minBet) {
+      return res.status(400).json({
+        error: `La apuesta es menor que el mínimo requerido para este jackpot (${minBet})`,
+      });
+    }
+
+    if (amount > maxBet) {
+      return res.status(400).json({
+        error: `La apuesta excede el máximo permitido para este jackpot (${maxBet})`,
+      });
+    }
+
+    const betPercentage = jackpot.betPercentage || 0;
+    const individualContribution = (amount * betPercentage) / 100;
+
+    let totalContributions = 0;
+    let totalAmountWon = 0;
+    let totalJackpotsAffected = [];
+    let totalBetPercentage = 0; 
+
+    totalContributions += individualContribution;
+
+    totalBetPercentage += betPercentage;
+
+    const remainingAmountForPlayer = amount - totalContributions;
+
+    jackpot.amount = (parseFloat(jackpot.amount) + individualContribution).toFixed(2);
+
+    try {
+      await jackpotRef.update({ amount: parseFloat(jackpot.amount) });
+    } catch (error) {
+      if (error.code === 'RESOURCE_EXHAUSTED') {
+        return res.status(429).json({ error: 'Quota exceeded, please try again later' });
+      } else {
+        return res.status(500).json({ error: 'Error al actualizar el jackpot' });
       }
-      return;
     }
 
     if (jackpot.active) {
@@ -470,74 +511,53 @@ app.post('/api/spin/:type', async (req, res) => {
         amountWon = parseFloat(jackpot.amount).toFixed(2);
         jackpot.amount = 0;
         jackpot.active = false;
+
         try {
-          await db.collection('jackpots').doc(docId).update(jackpot);
+          await jackpotRef.update(jackpot);
           io.emit('jackpot-won', { type: jackpotName, amountWon });
         } catch (error) {
           if (error.code === 'RESOURCE_EXHAUSTED') {
-            res
-              .status(429)
-              .json({ error: 'Quota exceeded, please try again later' });
+            return res.status(429).json({ error: 'Quota exceeded, please try again later' });
           } else {
-            res.status(500).json({ error: 'Error al actualizar el jackpot' });
+            return res.status(500).json({ error: 'Error al actualizar el jackpot' });
           }
         }
       } else {
-        const minPrize = 10;
-        const maxPrize = 15.5;
-        amountWon = (Math.random() * (maxPrize - minPrize) + minPrize).toFixed(
-          1,
-        );
-        jackpot.amount = (
-          parseFloat(jackpot.amount) + parseFloat(amountWon)
-        ).toFixed(2);
         jackpot.contributions++;
         try {
-          await db.collection('jackpots').doc(docId).update(jackpot);
+          await jackpotRef.update({
+            amount: parseFloat(jackpot.amount).toFixed(2),
+            contributions: jackpot.contributions,
+          });
         } catch (error) {
           if (error.code === 'RESOURCE_EXHAUSTED') {
-            res
-              .status(429)
-              .json({ error: 'Quota exceeded, please try again later' });
+            return res.status(429).json({ error: 'Quota exceeded, please try again later' });
           } else {
-            res.status(500).json({ error: 'Error al actualizar el jackpot' });
+            return res.status(500).json({ error: 'Error al actualizar el jackpot' });
           }
         }
       }
 
-      res.json({
+      return res.json({
         amountWon,
         jackpotAmount: parseFloat(jackpot.amount).toFixed(2),
         inJackpot: jackpot.active,
         wonJackpot: amountWon === jackpot.maxAmount.toFixed(2),
+        individualContribution,
+        remainingAmountForPlayer,
+        totalContributions, 
+        totalBetPercentage,  
       });
     } else {
-      const minPrize = 10;
-      const maxPrize = 15.5;
-      let amountWon = (
-        Math.random() * (maxPrize - minPrize) +
-        minPrize
-      ).toFixed(1);
-      jackpot.amount = (
-        parseFloat(jackpot.amount) + parseFloat(amountWon)
-      ).toFixed(2);
-      try {
-        await db.collection('jackpots').doc(docId).update(jackpot);
-      } catch (error) {
-        if (error.code === 'RESOURCE_EXHAUSTED') {
-          res
-            .status(429)
-            .json({ error: 'Quota exceeded, please try again later' });
-        } else {
-          res.status(500).json({ error: 'Error al actualizar el jackpot' });
-        }
-      }
-
-      res.json({
-        amountWon,
+      return res.json({
+        amountWon: '0.00',
         jackpotAmount: parseFloat(jackpot.amount).toFixed(2),
-        inJackpot: jackpot.active,
+        inJackpot: false,
         wonJackpot: false,
+        individualContribution,
+        remainingAmountForPlayer,
+        totalContributions,
+        totalBetPercentage,  
       });
     }
   } catch (error) {
@@ -545,6 +565,12 @@ app.post('/api/spin/:type', async (req, res) => {
     res.status(500).send('Error al manejar el jackpot');
   }
 });
+
+
+
+
+
+
 
 app.post('/api/deactivateJackpot/:id', async (req, res) => {
   const { id } = req.params;
@@ -614,6 +640,30 @@ app.post('/api/resetJackpot/:type', async (req, res) => {
     res.status(404).json({ error: `Jackpot ${type} no encontrado` });
   }
 });
+
+app.get('/api/jackpot/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const jackpotRef = db.collection('jackpots').doc(id);
+    const jackpotDoc = await jackpotRef.get();
+
+    if (!jackpotDoc.exists) {
+      return res.status(404).json({ error: `Jackpot con ID ${id} no encontrado` });
+    }
+
+    const jackpotData = jackpotDoc.data();
+    res.json({
+      id: jackpotDoc.id,
+      ...jackpotData,
+    });
+  } catch (error) {
+    console.error('Error al obtener el detalle del jackpot:', error);
+    res.status(500).json({ error: 'Error al obtener el detalle del jackpot' });
+  }
+});
+
+
+
 
 
 
