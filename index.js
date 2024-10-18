@@ -168,7 +168,7 @@ app.get('/reports', async (req, res) => {
 //Ruta Jackpots (En general)
 
 app.post('/api/jackpots', async (req, res) => {
-  const { nombre, trigger, monto, idAutomatico, idCasino, idMaquina, avatar } =
+  const { nombre, trigger, monto, idAutomatico, idCasino, idMaquina, minBet} =
     req.body;
 
   if (jackpots[nombre]) {
@@ -191,6 +191,7 @@ app.post('/api/jackpots', async (req, res) => {
 
     res.status(201).json({
       message: 'Jackpot creado correctamente',
+      id: idAutomatico,
       jackpot: newJackpot,
     });
   } catch (error) {
@@ -343,6 +344,9 @@ const loadJackpotsFromDbToShowAllEver = async () => {
         idAutomatico: data.idAutomatico,
         idCasino: data.idCasino,
         idMaquina: data.idMaquina,
+        minBet: data.minBet,
+        maxBet: data.maxBet,
+        betPercentage: data.betPercentage,
       });
     });
     console.log('Jackpots cargados correctamente desde Firestore', jackpots);
@@ -661,6 +665,30 @@ app.get('/api/jackpot/:id', async (req, res) => {
     res.status(500).json({ error: 'Error al obtener el detalle del jackpot' });
   }
 });
+
+
+app.get('/api/jackpot/:id/levels', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const jackpotRef = db.collection('jackpots').doc(id);
+    const jackpotDoc = await jackpotRef.get();
+
+    if (!jackpotDoc.exists) {
+      return res.status(404).json({ error: 'Jackpot no encontrado' });
+    }
+
+    const jackpotData = jackpotDoc.data();
+
+    const allowedLevels = jackpotData.allowedLevels || [];
+
+    res.json({ allowedLevels });
+  } catch (error) {
+    console.error('Error al obtener los niveles permitidos del jackpot:', error);
+    res.status(500).json({ error: 'Error al obtener los niveles permitidos' });
+  }
+});
+
 
 
 
@@ -1655,6 +1683,134 @@ app.get('/api/players/:idPlayer/balance', async (req, res) => {
     res.status(500).json({ message: 'Error interno del servidor', error: error.message });
   }
 });
+
+//Players Levels
+
+
+
+
+app.get('/api/levels', async (req, res) => {
+  try {
+    const snapshot = await db.collection('levels').get();
+    const levels = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+    res.json(levels);
+  } catch (error) {
+    console.error('Error al obtener los niveles:', error);
+    res.status(500).json({ error: 'Error al obtener los niveles' });
+  }
+});
+
+
+app.post('/api/levels', async (req, res) => {
+  const { nivel } = req.body;
+
+  if (!nivel) {
+    return res.status(400).json({ error: 'El nombre del nivel es obligatorio' });
+  }
+
+  const newLevel = {
+    nivel, 
+    status: 'Active',
+  };
+
+  try {
+    const levelRef = await db.collection('levels').add(newLevel);
+    res.status(201).json({ id: levelRef.id, ...newLevel });
+  } catch (error) {
+    console.error('Error al crear el nivel:', error);
+    res.status(500).json({ error: 'Error al crear el nivel' });
+  }
+});
+
+app.put('/api/levels/:id', async (req, res) => {
+  const { id } = req.params;
+  const { nivel } = req.body;
+
+  if (!nivel) {
+    return res.status(400).json({ error: 'El nombre del nivel es obligatorio' });
+  }
+
+  try {
+    const levelRef = db.collection('levels').doc(id);
+    const doc = await levelRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Nivel no encontrado' });
+    }
+
+    await levelRef.update({ nivel });
+    res.json({ message: 'Nivel actualizado correctamente' });
+  } catch (error) {
+    console.error('Error al actualizar el nivel:', error);
+    res.status(500).json({ error: 'Error al actualizar el nivel' });
+  }
+});
+
+
+
+app.post('/api/activateLevel/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const levelRef = db.collection('levels').doc(id);
+    const doc = await levelRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Nivel no encontrado' });
+    }
+
+    await levelRef.update({ status: 'Active' });
+    res.json({ message: 'Nivel activado correctamente' });
+  } catch (error) {
+    console.error('Error al activar el nivel:', error);
+    res.status(500).json({ error: 'Error al activar el nivel' });
+  }
+});
+
+
+
+app.post('/api/deactivateLevel/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const levelRef = db.collection('levels').doc(id);
+    const doc = await levelRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Nivel no encontrado' });
+    }
+
+    await levelRef.update({ status: 'Inactive' });
+    res.json({ message: 'Nivel desactivado correctamente' });
+  } catch (error) {
+    console.error('Error al desactivar el nivel:', error);
+    res.status(500).json({ error: 'Error al desactivar el nivel' });
+  }
+});
+
+
+app.delete('/api/levels/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const levelRef = db.collection('levels').doc(id);
+    const doc = await levelRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ error: 'Nivel no encontrado' });
+    }
+
+    await levelRef.delete();
+    res.json({ message: 'Nivel eliminado correctamente' });
+  } catch (error) {
+    console.error('Error al eliminar el nivel:', error);
+    res.status(500).json({ error: 'Error al eliminar el nivel' });
+  }
+});
+
 
 
 
